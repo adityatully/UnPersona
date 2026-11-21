@@ -1,0 +1,61 @@
+--- a/eval/eval_persona.py	2026-11-21 23:01:45
++++ b/eval/eval_persona.py	2026-11-21 23:02:04
+@@ -161,7 +161,7 @@
+ 
+ 
+ 
+-async def eval_batched(questions, llm, tokenizer, coef, vector=None, layer=None, n_per_question=100, max_concurrent_judges=100, max_tokens=1000, steering_type="last", lora_path=None):
++async def eval_batched(questions, llm, tokenizer, coef, vector=None, layer=None, n_per_question=100, max_concurrent_judges=100, max_tokens=1000, steering_type="last", lora_path=None, judge=True):
+     """Batch process all questions together for faster inference"""
+     # Collect all prompts from all questions
+     all_paraphrases = []
+@@ -199,13 +199,19 @@
+             for question_text, answer, prompt in zip(q_paraphrases, q_answers, q_prompts)
+         ])
+         question_dfs.append(df)
+-        
++        if not judge:  # [unpersona] generate-only: the local judge cannot share the GPU with the model
++            continue
++
+         # Collect all judge tasks
+         for metric, judge in question.judges.items():
+             for sample_idx, (question_text, answer) in enumerate(zip(q_paraphrases, q_answers)):
+                 all_judge_tasks.append((judge, question_text, answer))
+                 all_judge_indices.append((i, metric, sample_idx))
+     
++    if not judge:  # [unpersona]
++        print("judge=False: skipping judge evaluations (score later with unpersona.judge)")
++        return question_dfs
++
+     # Run judge evaluations with concurrency control
+     print(f"Running {len(all_judge_tasks)} judge evaluations with max {max_concurrent_judges} concurrent requests...")
+     all_results = [None] * len(all_judge_tasks)  # Pre-allocate results array
+@@ -237,12 +243,12 @@
+     
+     return question_dfs
+ 
+-def main(model, trait, output_path, coef=0, vector_path=None, layer=None, steering_type="response", max_tokens=1000, n_per_question=10, batch_process=True, max_concurrent_judges=100, persona_instruction_type=None, assistant_name=None, judge_model="gpt-4.1-mini-2025-04-14", version="extract", overwrite=False):
++def main(model, trait, output_path, coef=0, vector_path=None, layer=None, steering_type="response", max_tokens=1000, n_per_question=10, batch_process=True, max_concurrent_judges=100, persona_instruction_type=None, assistant_name=None, judge_model="gpt-4.1-mini-2025-04-14", version="extract", overwrite=False, judge=True):
+     """Evaluate a model on all questions form the evaluation yaml file"""
+     if os.path.exists(output_path) and not overwrite:
+         print(f"Output path {output_path} already exists, skipping...")
+         df = pd.read_csv(output_path)
+-        for trait in [trait , "coherence"]:
++        for trait in [t for t in [trait, "coherence"] if t in df.columns]:  # [unpersona] unjudged files lack them
+             threshold = 50
+             print(f"{trait}:  {df[trait].mean():.2f} +- {df[trait].std():.2f}")
+         return
+@@ -264,8 +270,12 @@
+     questions = load_persona_questions(trait, temperature=temperature, persona_instructions_type=persona_instruction_type, assistant_name=assistant_name, judge_model=judge_model, version=version)
+     if batch_process:
+         print(f"Batch processing {len(questions)} '{trait}' questions...")
+-        outputs_list = asyncio.run(eval_batched(questions, llm, tokenizer,coef, vector, layer, n_per_question, max_concurrent_judges, max_tokens, steering_type=steering_type, lora_path=lora_path))
++        outputs_list = asyncio.run(eval_batched(questions, llm, tokenizer,coef, vector, layer, n_per_question, max_concurrent_judges, max_tokens, steering_type=steering_type, lora_path=lora_path, judge=judge))
+         outputs = pd.concat(outputs_list)
++        if not judge:  # [unpersona] save responses only
++            outputs.to_csv(output_path, index=False)
++            print(f"saved {len(outputs)} unjudged responses to {output_path}")
++            return
+     else:
+         outputs = []
+         for question in tqdm(questions, desc=f"Processing {trait} questions"):

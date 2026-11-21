@@ -4,11 +4,11 @@ Step 1 (sample):  python -m unpersona.calibration sample --extract_dir DIR --out
     For each trait, draws n/2 responses from the pos-system-prompt file and n/2 from the neg file.
     Sampling is by system prompt, NOT by any judge score, so it does not favour either judge.
     Writes
-      OUT/calib.csv      row_id, trait, question, answer, my_score (empty)  <- you score this, blind
+      OUT/calib.csv      row_id, trait, question, answer, my_score, my_coherence (empty) <- you score, blind
       OUT/calib_key.csv  row_id, polarity, source file, source row          <- do not open before scoring
 Step 2: score calib.csv with each judge into separate files (unpersona.judge --prefix <name>_).
 Step 3 (agree):   python -m unpersona.calibration agree OUT/calib.csv OUT/scores_qwen14b.csv ...
-    Per trait and judge: Spearman, Pearson, mean abs error, and agreement on the >= 50 cut
+    Per judge, metric (trait, coherence) and trait: Spearman, Pearson, mean abs error, and agreement on the >= 50 cut
     (the cut generate_vec.py uses to keep a response), with Cohen's kappa.
 """
 import argparse
@@ -38,8 +38,9 @@ def sample(extract_dir, out_dir, traits=TRAITS, n=30, seed=0,
     order = rng.permutation(len(rows))               # shuffle so pos/neg are not in blocks
     calib = pd.DataFrame([rows[i] for i in order])
     calib.insert(0, "row_id", range(len(calib)))
-    calib["my_score"] = ""
-    k = pd.DataFrame([key[i] for i in order])
+    calib["my_score"] = ""      # trait score 0-100, same rubric as the judge
+    calib["my_coherence"] = ""  # coherence 0-100 (a fluent but cruel answer is still coherent)
+    k =pd.DataFrame([key[i] for i in order])
     k.insert(0, "row_id", range(len(k)))
     calib.to_csv(os.path.join(out_dir, "calib.csv"), index=False)
     k.to_csv(os.path.join(out_dir, "calib_key.csv"), index=False)
@@ -53,32 +54,40 @@ def _kappa(a, b):
     return float("nan") if pe == 1 else (po - pe) / (1 - pe)
 
 
-def agree(calib_csv, score_csvs, cut=50.0, human_col="my_score"):
+def agree(calib_csv, score_csvs, cut=50.0):
+    """Compare my_score with each judge's <prefix>trait, and my_coherence with <prefix>coherence."""
     calib = pd.read_csv(calib_csv)
-    human = pd.to_numeric(calib[human_col], errors="coerce")
     out = []
     for path in score_csvs:
         s = pd.read_csv(path)
-        judge_cols = [c for c in s.columns if c.endswith("trait") and c != "trait"]
-        assert len(judge_cols) == 1, f"{path}: expected one '<prefix>trait' column, got {judge_cols}"
-        col = judge_cols[0]
-        merged = calib[["row_id", "trait"]].assign(human=human).merge(s[["row_id", col]], on="row_id")
-        for trait, g in list(merged.groupby("trait")) + [("ALL", merged)]:
-            g = g.dropna(subset=["human", col])
-            h, j = g["human"].to_numpy(float), g[col].to_numpy(float)
-            if len(g) < 3:
-                continue
-            out.append(dict(
-                judge=col, trait=trait, n=len(g),
-                spearman=stats.spearmanr(h, j).statistic,
-                pearson=stats.pearsonr(h, j).statistic,
-                mae=np.mean(np.abs(h - j)),
-                cut_agree=np.mean((h >= cut) == (j >= cut)),
-                kappa=_kappa(h >= cut, j >= cut),
-            ))
+        for metric, human_col, suffix in [("trait", "my_score", "trait"), ("coherence", "my_coherence", "coherence")]:
+            judge_cols = [c for c in s.columns if c.endswith(suffix) and c not in ("trait", "my_coherence")]
+            assert len(judge_cols) == 1, f"{path}: expected one '<prefix>{suffix}' column, got {judge_cols}"
+            col = judge_cols[0]
+            human = pd.to_numeric(calib[human_col], errors="coerce")
+            merged = calib[["row_id", "trait"]].assign(human=human).merge(s[["row_id", col]], on="row_id")
+            out += _agree_rows(merged, col, metric, cut)
     res = pd.DataFrame(out)
     print(res.round(3).to_string(index=False))
     return res
+
+
+def _agree_rows(merged, col, metric, cut):
+    out = []
+    for trait, g in list(merged.groupby("trait")) + [("ALL", merged)]:
+        g = g.dropna(subset=["human", col])
+        h, j = g["human"].to_numpy(float), g[col].to_numpy(float)
+        if len(g) < 3:
+            continue
+        out.append(dict(
+            judge=col, metric=metric, trait=trait, n=len(g),
+            spearman=stats.spearmanr(h, j).statistic,
+            pearson=stats.pearsonr(h, j).statistic,
+            mae=np.mean(np.abs(h - j)),
+            cut_agree=np.mean((h >= cut) == (j >= cut)),
+            kappa=_kappa(h >= cut, j >= cut),
+        ))
+    return out
 
 
 if __name__ == "__main__":
