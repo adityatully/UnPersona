@@ -1,0 +1,113 @@
+--- a/config.py	2026-11-21 21:51:25
++++ b/config.py	2026-11-21 21:51:52
+@@ -65,7 +65,9 @@
+         os.environ['OPENAI_API_KEY'] = self.openai_api_key
+         
+         # Set HuggingFace token in environment
+-        os.environ['HF_TOKEN'] = self.hf_token
++        # [unpersona] optional: huggingface_hub reads the token saved by `hf auth login` itself
++        if os.environ.get('HF_TOKEN'):
++            os.environ['HF_TOKEN'] = self.hf_token
+         
+         # Set Weights & Biases project
+         os.environ['WANDB_PROJECT'] = self.wandb_project
+\ No newline at end of file
+@@ -74,8 +76,7 @@
+         """Validate that all required credentials are available."""
+         try:
+             _ = self.openai_api_key
+-            _ = self.hf_token
+-            return True
++            return True  # [unpersona] HF_TOKEN no longer required
+         except ValueError as e:
+             warnings.warn(f"Credential validation failed: {e}")
+             return False
+\ No newline at end of file
+--- a/judge.py	2026-11-21 21:51:24
++++ b/judge.py	2026-11-21 21:51:48
+@@ -10,10 +10,37 @@
+ 
+ # Set up credentials and environment
+ config = setup_credentials()
+-openai = AsyncOpenAI()
++openai = AsyncOpenAI()  # [unpersona] reads OPENAI_BASE_URL from the env -> local vLLM judge server
+ 
++# [unpersona] How a 0_100 score is read from the judge:
++#   logprob (default, = paper): 1 output token, score = sum_n n * p(n) over number tokens 0..100
++#                               in the top-20 logprobs. Only valid if "0".."100" are single tokens.
++#   text:                       greedy, up to 4 tokens, parse the number in the text. For judges whose
++#                               tokenizer splits numbers into digits (Qwen: "85" -> "8","5").
++JUDGE_SCORING = os.environ.get("JUDGE_SCORING", "logprob")
++assert JUDGE_SCORING in ("logprob", "text"), f"JUDGE_SCORING must be logprob or text, got {JUDGE_SCORING}"
++_checked_models = set()
+ 
+ 
++def _check_numbers_are_single_tokens(model: str) -> None:
++    """[unpersona] Fail loudly if logprob scoring is used with a judge that splits numbers into digits.
++    Uses the /tokenize endpoint of the local vLLM server (skipped when no OPENAI_BASE_URL is set)."""
++    base_url = os.environ.get("OPENAI_BASE_URL")
++    if JUDGE_SCORING != "logprob" or not base_url or model in _checked_models:
++        return
++    import httpx
++    root = base_url.rstrip("/").removesuffix("/v1")
++    for s in ["85", "100"]:
++        r = httpx.post(f"{root}/tokenize", json={"model": model, "prompt": s, "add_special_tokens": False}, timeout=30)
++        r.raise_for_status()
++        n = r.json()["count"]
++        if n != 1:
++            raise RuntimeError(f"Judge {model} tokenizes {s!r} into {n} tokens: logprob scoring would read only "
++                               f"the first digit. Set JUDGE_SCORING=text for this judge.")
++    _checked_models.add(model)
++
++
++
+ class OpenAiJudge:
+     """OpenAI models tokenize all numbers from 0-100 as single tokens, which is why we can get exactly 
+     one completion token with logprobs. Other models don't necessarily do this, which is why they need
+@@ -35,9 +62,13 @@
+             raise ValueError(f"Invalid eval_type: {self.eval_type}")
+ 
+         self.prompt_template = prompt_template
+-        
++        if self.eval_type == "0_100":
++            _check_numbers_are_single_tokens(self.model)  # [unpersona]
++
+     async def judge(self, **kwargs):
+         messages = [dict(role='user', content=self.prompt_template.format(**kwargs))]
++        if self.eval_type == "0_100" and JUDGE_SCORING == "text":  # [unpersona]
++            return self._parse_0_100_text(await self.query_number_text(messages))
+         if self.eval_type == "binary_text":
+             response_text = await self.query_full_text(messages)
+             score = self.aggregate_score(response_text) # aggregate_score is _aggregate_binary_text_score
+@@ -82,6 +113,31 @@
+         except (IndexError, AttributeError):
+             return ""
+ 
++    async def query_number_text(self, messages) -> str:
++        """[unpersona] Greedy, at most 4 tokens: enough for "100" as 3 digit tokens, or "REFUSAL"."""
++        completion = await openai.chat.completions.create(
++            model=self.model,
++            messages=messages,
++            max_tokens=4,
++            temperature=0,
++            seed=0
++        )
++        try:
++            return completion.choices[0].message.content or ""
++        except (IndexError, AttributeError):
++            return ""
++
++    @staticmethod
++    def _parse_0_100_text(text: str):
++        """[unpersona] "85" -> 85.0; "REFUSAL", no number, or a number outside 0..100 -> None
++        (None = same meaning as the paper's 'not enough weight on numbers')."""
++        import re
++        m = re.match(r"\s*(\d{1,3})(?!\d)", text)
++        if m is None:
++            return None
++        n = int(m.group(1))
++        return float(n) if 0 <= n <= 100 else None
++
+     def _aggregate_0_100_score(self, score: dict) -> float:
+         #   NOTE: we don't check for refusals explcitly. Instead we assume that
+         #   if there's at least 0.25 total weight on numbers, it's not a refusal.

@@ -1,0 +1,20 @@
+# paper repo: cloned separately (upstream commit recorded in patches/README.md), never committed
+third_party/
+
+# python / notebooks
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# large files never go in git (they live in /data/coe9/artifacts/unpersona)
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.npy
+*.npz
+*.h5
+
+# secrets
+.env
+.env.*
