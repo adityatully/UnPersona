@@ -1,0 +1,75 @@
+--- a/generate_vec.py	2026-11-22 14:58:24
++++ b/generate_vec.py	2026-11-22 14:58:24
+@@ -22,11 +22,13 @@
+     for text, prompt in tqdm(zip(texts, prompts), total=len(texts)):
+         inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(model.device)
+         prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
+-        outputs = model(**inputs, output_hidden_states=True)
++        with torch.no_grad():  # [unpersona]
++            outputs = model(**inputs, output_hidden_states=True)
+         for layer in layer_list:
+-            prompt_avg[layer].append(outputs.hidden_states[layer][:, :prompt_len, :].mean(dim=1).detach().cpu())
+-            response_avg[layer].append(outputs.hidden_states[layer][:, prompt_len:, :].mean(dim=1).detach().cpu())
+-            prompt_last[layer].append(outputs.hidden_states[layer][:, prompt_len-1, :].detach().cpu())
++            h = outputs.hidden_states[layer].float()  # [unpersona] fp32 BEFORE the mean: bf16 sums lose small terms
++            prompt_avg[layer].append(h[:, :prompt_len, :].mean(dim=1).detach().cpu())
++            response_avg[layer].append(h[:, prompt_len:, :].mean(dim=1).detach().cpu())
++            prompt_last[layer].append(h[:, prompt_len-1, :].detach().cpu())
+         del outputs
+     for layer in layer_list:
+         prompt_avg[layer] = torch.cat(prompt_avg[layer], dim=0)
+\ No newline at end of file
+@@ -37,13 +39,18 @@
+ import pandas as pd
+ import os
+ 
+-def get_persona_effective(pos_path, neg_path, trait, threshold=50):
++def get_persona_effective(pos_path, neg_path, trait, threshold=50, max_pairs=None, seed=0):
+     persona_pos = pd.read_csv(pos_path)
+     persona_neg = pd.read_csv(neg_path)
+     mask = (persona_pos[trait] >=threshold) & (persona_neg[trait] < 100-threshold) & (persona_pos["coherence"] >= 50) & (persona_neg["coherence"] >= 50)
+ 
+     persona_pos_effective = persona_pos[mask]
+     persona_neg_effective = persona_neg[mask]
++    print(f"[unpersona] {trait}: {int(mask.sum())} kept pairs")
++    if max_pairs is not None and max_pairs < len(persona_pos_effective):  # [unpersona] same random pairs on both sides
++        idx = persona_pos_effective.sample(n=max_pairs, random_state=seed).index
++        persona_pos_effective, persona_neg_effective = persona_pos.loc[idx], persona_neg.loc[idx]
++        print(f"[unpersona] using a random subset of {max_pairs} pairs (seed {seed})")
+ 
+     persona_pos_effective_prompts = persona_pos_effective["prompt"].tolist()    
+     persona_neg_effective_prompts = persona_neg_effective["prompt"].tolist()
+\ No newline at end of file
+@@ -54,11 +61,16 @@
+     return persona_pos_effective, persona_neg_effective, persona_pos_effective_prompts, persona_neg_effective_prompts, persona_pos_effective_responses, persona_neg_effective_responses
+ 
+ 
+-def save_persona_vector(model_name, pos_path, neg_path, trait, save_dir, threshold=50):
+-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
++DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16}  # [unpersona]
++
++
++def save_persona_vector(model_name, pos_path, neg_path, trait, save_dir, threshold=50, dtype="fp32", max_pairs=None):
++    # [unpersona] dtype: upstream loads without torch_dtype, i.e. fp32
++    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=DTYPES[dtype])
++    model.eval()
+     tokenizer = AutoTokenizer.from_pretrained(model_name)
+ 
+-    persona_pos_effective, persona_neg_effective, persona_pos_effective_prompts, persona_neg_effective_prompts, persona_pos_effective_responses, persona_neg_effective_responses = get_persona_effective(pos_path, neg_path, trait, threshold)
++    persona_pos_effective, persona_neg_effective, persona_pos_effective_prompts, persona_neg_effective_prompts, persona_pos_effective_responses, persona_neg_effective_responses = get_persona_effective(pos_path, neg_path, trait, threshold, max_pairs)
+ 
+     persona_effective_prompt_avg, persona_effective_prompt_last, persona_effective_response_avg = {}, {}, {}
+ 
+\ No newline at end of file
+@@ -88,5 +100,8 @@
+     parser.add_argument("--trait", type=str, required=True)
+     parser.add_argument("--save_dir", type=str, required=True)
+     parser.add_argument("--threshold", type=int, default=50)
++    parser.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32")  # [unpersona]
++    parser.add_argument("--max_pairs", type=int, default=None)                # [unpersona]
+     args = parser.parse_args()
+-    save_persona_vector(args.model_name, args.pos_path, args.neg_path, args.trait, args.save_dir, args.threshold)
+\ No newline at end of file
++    save_persona_vector(args.model_name, args.pos_path, args.neg_path, args.trait, args.save_dir, args.threshold,
++                        args.dtype, args.max_pairs)
+\ No newline at end of file
