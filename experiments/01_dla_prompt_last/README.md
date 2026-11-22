@@ -51,20 +51,87 @@ Context needed to read this (from the same vectors):
 - Fig 3: relative to the projection's zero, the helpful prompt moves far negative (−33 at L20) while the
   evil prompt moves less positive (+16). The zero point is arbitrary (no neutral baseline).
 
-## What I learned
-_(to be written by me)_
 
-Draft points from the discussion:
-- DLA onto a fixed readout direction is exact here and needs no normalization for L < 28; at L = 28 HF's
-  hidden state is already normed, so the final-norm scale has to be frozen (level 1).
-- Extract and eval give the same picture because they share the same 5 system prompt pairs — eval is held
-  out on the questions, not on the system prompts that drive prompt_last.
-- Direct writes onto v̂_L come mostly from the last 1–2 blocks before L. Because the direction rotates with
-  depth, DLA onto one readout favours late components by construction: early blocks write earlier versions of
-  the direction that are mostly orthogonal to v̂_20. "Block 19 creates the evil direction" does not follow
-  (level 3); "blocks 18–19 write most of the component of the difference that lies along v̂_20" does (level 1).
-- At this position attention is the only entry point for the system prompt; MLP contributions transform what
-  attention imported earlier (level 1), so the MLP share is a direct-path share, not the origin.
+## Follow-up: a fixed ruler (figs 4–6)
+
+**Why.** Figs 1–2 used a ruler (`v̂_L`) built at the readout layer L. Changing L from 20 to 28 moved the top
+writers from MLP 18/19 to MLP 26/27. Was that something in the model, or something in the ruler? To separate
+the two, I kept one ruler fixed, the evil `v̂_20`, and scored **every** block 0–27 against it. This includes
+blocks 20–27, which come after the layer the ruler was built at.
+
+**What one bar is.** For block l: `v̂_20ᵀ(mean over evil-prompt runs of out_l − mean over helpful-prompt runs of out_l)`,
+at the last prompt token, extract prompts. Subtracting removes what the block writes in both runs. Toy:
+block writes 15 along `v̂_20` in the evil run and 12 in the helpful run, so 3 units are caused by the evil prompt.
+
+| figure | script | what it shows |
+|---|---|---|
+| `fig4_fixed_ruler_v20_all_blocks.png` | `fixed_ruler.py` | evil: all 28 blocks against `v̂_20`, plus the running total |
+| `fig5_fixed_ruler_v20_3traits.png` | `fixed_ruler_traits.py` | the same bar chart for evil, sycophantic, hallucinating (each against its own `v̂_20`) |
+| `fig6_share_vs_raw_3traits.png` | `share_vs_raw.py` | per layer: raw amount `v̂_20ᵀh_l` and share `v̂_20ᵀh_l / ‖h_l‖`, trait run and helpful run separately |
+
+Other traits: `python main.py sycophantic` / `hallucinating` (artifacts in `exp01_dla_prompt_last/<trait>/`;
+reconstruction checks in `check_vector_reconstruction_<trait>.json`).
+
+**Checks.** The sum of all components equals the running total at the end. Evil extract: 56.155 vs 56.130.
+Eval: 53.302 vs 53.309.
+
+**Results.**
+- Blocks 0–19 build the amount along `v̂_20` (48.8 at layer 20). Blocks 20–26 add more, but with small
+  bars. Block 27 writes **against** it: evil MLP27 ≈ −20.6 (attention 27 ≈ +3).
+- Same shape in all three traits; the last block's push-back is strongest for evil.
+
+  | trait | built along `v̂_20` before block 27 | block 27 | fraction removed |
+  |---|---|---|---|
+  | evil | ≈ 77 | ≈ −21 (MLP) | ≈ 25% |
+  | sycophantic | ≈ 83 | ≈ −14 (attn ≈ −4.6, MLP ≈ −9) | ≈ 17% |
+  | hallucinating | ≈ 56 | ≈ −3 | ≈ 6% |
+
+  Hallucinating also has small negative MLPs around 20–22.
+- The total stays positive after block 27 (evil: ≈ 77 → 56). Block 27 **reduces** the persona along `v̂_20`;
+  it does not reverse it.
+- Fig 6: the raw gap (trait − helpful) keeps growing after layer 20 (evil 48.8 → 73.7 at layer 27;
+  sycophantic 53.3 → 83.1; hallucinating 47.5 → 56.5). The **share** peaks around layer 20 in the trait run and
+  then falls toward 0, because the rest of the stream grows faster (dilution).
+
+## What I learned
+_(draft from our discussion — to be edited by me)_
+
+Certainty: (1) mathematical fact, (2) strong empirical evidence, (3) open hypothesis.
+
+1. **DLA works as an exact bookkeeping tool here.** The residual stream is a plain sum, so the per-component
+   scores add up to the total (checked to 2–3 decimals). (1)
+2. **Subtracting the two runs isolates what the system prompt caused.** Without it, a component's score
+   includes what it always writes at this token (e.g. "an answer starts here"). (1)
+3. **DLA onto `v_L` always favours the blocks just before L, because the ruler is built from their writes.**
+   `v_L` is the sum of all writes before L. The latest large writes dominate that sum, so the latest writers
+   always look the most aligned. The ranking says as much about the ruler as about the model. (1)
+4. **The direction rotates with depth.** cos(v_20, v_27) = 0.40, so only ≈ 16% of `v_27`'s squared length
+   lies along `v̂_20`. Rotation comes from vector addition (new writes in new directions), not from anything
+   being deleted. Nothing is ever removed from the stream unless a component writes a negative amount. (1)
+5. **A fixed ruler shows what later blocks do to an earlier direction.** Blocks 20–26 add a little; block 27
+   pushes back, in all three traits. (2) on these prompts.
+6. **Raw amount ≠ share.** Each block reads a normalized copy of the stream, so what it "notices" is roughly
+   the share `v̂ᵀh / ‖h‖`. The persona's share peaks around layer 20 and then gets diluted. This may be part of
+   why the paper's steering works best at layer 20. The pattern is (2); the link to steering is (3).
+7. **Dilution and a negative write are different things.** Dividing by a positive norm can only make the
+   persona quieter, never flip its sign (1). MLP27's write is an actual negative push.
+8. **Writing ≠ reading.** DLA only shows who writes along a direction. It never shows who uses it, or whether
+   it is necessary. (1)
+9. **0 is not a neutral point along the persona direction.** At layer 20 the helpful run sits at ≈ −32 and the
+   evil run at ≈ +16. Any method that sets this value to 0 (zero-ablation) pushes helpful runs toward evil. (1)
 
 ## Open questions
-_(to be written by me)_
+_(draft — to be edited by me)_
+
+- **What does MLP27 do?** Three stories, all (3): a clean-up before the output; a general shrink /
+  confidence regulation (it also writes against `v̂_20` in the helpful run alone); or conversion (it reads
+  evil and writes its consequence, e.g. a push toward an evil first token, in a direction partly opposite to
+  `v̂_20`). Known mechanisms of this type in other models: Hydra effect / erasure, copy suppression, entropy /
+  confidence neurons. These references were cited from memory and have not been checked. Parked.
+- **What do the new late directions mean?** (A) the same "evil", re-encoded; or (B) downstream things caused
+  by evil, like an answer plan or the first token "Let". Possible tests: logit lens of `v_l`; consistency
+  across questions; steering with late vectors. Parked.
+- **Is the direction necessary, not only sufficient?** → next experiment (ablation vs negative steering).
+- Do the three traits share the MLP 18/19 peak because of a shared mechanism, or only because of the shared
+  ruler effect (point 3)? Probably the latter; not tested.
+- Layers 1–10 reconstruct with cos ≥ 0.96 instead of 0.999. Is that bf16 eager-vs-SDPA rounding? Not checked.
