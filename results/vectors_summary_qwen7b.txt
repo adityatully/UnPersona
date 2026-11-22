@@ -1,0 +1,28 @@
+all 9 files: shape (29, 3584) dtype torch.float32 finite
+
+response_avg norm per layer (row l = hidden_states[l]):
+ layer            evil    sycophantic  hallucinating
+    0            0.045          0.046          0.066
+    1            1.105          0.920          1.051
+    4            2.814          2.704          3.294
+    8            6.709          6.244          7.509
+   12           11.051          9.019         11.967
+   16           15.653         13.274         18.029
+   18           17.144         14.480         20.193
+   20           26.635         23.553         27.811
+   22           37.943         31.745         38.014
+   24           54.880         44.386         48.892
+   26           74.187         55.899         60.817
+   28           96.418         86.329         70.904
+
+cosine between traits, response_avg:
+  layer 10: evil-syco 0.423  evil-hall 0.054  syco-hall -0.044
+  layer 20: evil-syco 0.369  evil-hall 0.176  syco-hall 0.142
+  layer 28: evil-syco 0.201  evil-hall 0.202  syco-hall 0.010
+
+cosine between variants at layer 20:
+  evil          resp-prompt_avg 0.626  resp-prompt_last 0.590
+  sycophantic   resp-prompt_avg 0.348  resp-prompt_last 0.490
+  hallucinating resp-prompt_avg 0.314  resp-prompt_last 0.408
+
+evil response_avg, 50-pair subset vs all 884 pairs: cos at layers 10/20/28 = 0.989 0.993 0.992
