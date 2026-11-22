@@ -1,0 +1,9 @@
+loaded in 10s; dtype torch.bfloat16; attn eager; GPU mem 14.2 GiB
+block-19 output shape (1, 38, 3584)  max |nnsight - HF hidden_states[20]| = 0.0
+last prompt pos 37 of 38
+Generating test split:   0%|          | 0/14042 [00:00<?, ? examples/s]Generating test split:   7%|▋         | 1000/14042 [00:00<00:01, 7572.79 examples/s]Generating test split: 100%|██████████| 14042/14042 [00:00<00:00, 97670.55 examples/s]
+Generating validation split:   0%|          | 0/1531 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 1531/1531 [00:00<00:00, 328262.93 examples/s]
+Generating dev split:   0%|          | 0/285 [00:00<?, ? examples/s]Generating dev split: 100%|██████████| 285/285 [00:00<00:00, 98791.46 examples/s]
+Generating auxiliary_train split:   0%|          | 0/99842 [00:00<?, ? examples/s]Generating auxiliary_train split:  21%|██        | 21000/99842 [00:00<00:00, 207655.46 examples/s]Generating auxiliary_train split:  51%|█████     | 51000/99842 [00:00<00:00, 259474.81 examples/s]Generating auxiliary_train split:  90%|█████████ | 90000/99842 [00:00<00:00, 314030.97 examples/s]Generating auxiliary_train split: 100%|██████████| 99842/99842 [00:00<00:00, 313603.33 examples/s]
+MMLU subset n=500  accuracy 0.664  mean p(correct) 0.664  (31s)
+EXIT 0
