@@ -221,8 +221,17 @@ def _read_returned(out_dir):
         txt = open(p).read().replace("```csv", "").replace("```", "")
         lines = [l.strip() for l in txt.splitlines() if l.strip() and l.strip().lower() != "id,score"]
         rec = {}
+        want_ids = set(g["id"])
         for l in lines:
             m = re.fullmatch(r"([a-z0-9]{5})\s*,\s*(REFUSAL|\d{1,3})", l, flags=re.I)
+            short = re.fullmatch(r"([a-z0-9]{4})\s*,\s*(REFUSAL|\d{1,3})", l, flags=re.I)
+            if not m and short:
+                # The scorer sometimes drops an id's last character (seen 3 times, always letters+digit
+                # ids, identical on reruns). Repair only if exactly one not-yet-seen id has that prefix.
+                cand = [i for i in want_ids - set(rec) if i.startswith(short.group(1))]
+                if len(cand) == 1:
+                    print(f"note: {doc_id}: repaired id {short.group(1)!r} -> {cand[0]!r}")
+                    m = re.fullmatch(r"([a-z0-9]{5}),(.*)", f"{cand[0]},{short.group(2)}")
             if not m:
                 problems.append(f"{doc_id}: bad line {l!r}")
                 continue
