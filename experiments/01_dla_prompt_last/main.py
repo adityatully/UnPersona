@@ -17,7 +17,7 @@ Data
   B  'eval':    the same 5 pos / 5 neg system prompts x the 20 held-out eval questions.
 Attribution of the difference: Delta_c = v_hat^T (mean_pos out_c - mean_neg out_c); sum_c Delta_c =
 v_hat^T (mean_pos h_L - mean_neg h_L), which equals ||v_L|| on A.
-Env: interp. Run from the repo root:  python experiments/01_dla_prompt_last/main.py
+Env: interp. Run from the repo root:  python experiments/01_dla_prompt_last/main.py [evil|sycophantic|hallucinating]
 """
 import json
 import os
@@ -35,10 +35,12 @@ from unpersona.model import load_model, N_LAYERS, N_HEADS, D_HEAD, D_MODEL   # n
 from unpersona.prompts import build_prompt, load_questions                      # noqa: E402
 from unpersona.vectors import load_vectors                                       # noqa: E402
 
-TRAIT, VARIANT = "evil", "prompt_last"
+# trait from the command line (default evil); non-evil outputs go to a per-trait subfolder so evil files stay put
+TRAIT = sys.argv[1] if len(sys.argv) > 1 else "evil"
+VARIANT = "prompt_last"
 READOUT = [20, 28]
 JUDGED = "/data/coe9/artifacts/unpersona/judged_final/Qwen2.5-7B-Instruct"
-OUT = "/data/coe9/artifacts/unpersona/exp01_dla_prompt_last"
+OUT = "/data/coe9/artifacts/unpersona/exp01_dla_prompt_last" + ("" if TRAIT == "evil" else f"/{TRAIT}")
 HERE = os.path.join(REPO, "experiments", "01_dla_prompt_last")
 torch.manual_seed(0)
 
@@ -148,7 +150,7 @@ def main():
                  recon_norm_ratio_L28=(v_re[28].norm() / V[28].norm()).item(),
                  layer0_norm_saved=V[0].norm().item(), layer0_norm_recomputed=v_re[0].norm().item())
     print(json.dumps(check, indent=1))
-    json.dump(check, open(f"{HERE}/check_vector_reconstruction.json", "w"), indent=1)
+    json.dump(check, open(f"{HERE}/check_vector_reconstruction" + ("" if TRAIT == "evil" else f"_{TRAIT}") + ".json", "w"), indent=1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,8 @@
+{
+ "n_pairs": 461,
+ "recon_cos_min_layers1_28": 0.9311434030532837,
+ "recon_norm_ratio_L20": 0.9882529377937317,
+ "recon_norm_ratio_L28": 0.9439565539360046,
+ "layer0_norm_saved": 0.0,
+ "layer0_norm_recomputed": 0.0
+}
