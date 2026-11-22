@@ -6,7 +6,11 @@ Layer index convention (checked against generate_vec.py, task 3):
     hidden_states[l]  = output of decoder block l-1  = input of block l     (l = 1..28)
     "layer 20" in the paper = vec[20] = output of block 19 = model.model.layers[19] output;
     the paper's ActivationSteerer hooks layers[layer - 1] for this reason.
-    vec[28] = output of the last block, BEFORE the final RMSNorm (model.model.norm).
+    EXCEPTION: vec[28] is in POST-final-norm space. HF appends model.model.norm(block-27 output) as
+    hidden_states[28] (checked in transformers 4.52 source and numerically, experiment 01), so
+    vec[28] = mean_pos norm(x) - mean_neg norm(x). Rows 0..27 are raw residual-stream directions.
+    To compare with the raw output of block 27, use model.model.layers[27].output and apply
+    model.model.norm, or read vec[27] (pre-norm, one block earlier).
 
 Vectors are NOT normalised: ||vec[l]|| grows with depth like the residual stream (evil response_avg:
 ~0.05 at l=0, ~27 at l=20, ~96 at l=28). Normalise yourself when a formula needs a unit vector.
