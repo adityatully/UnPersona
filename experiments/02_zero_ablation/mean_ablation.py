@@ -10,7 +10,7 @@ Step 1  normal values. Forward passes over the saved no-prompt answers (noprompt
         system prompt, no ablation). At every stream point l = 0..28 (l < 28: hidden_states[l], the input of
         block l; l = 28: the input of the final norm = block 27's output, NOT HF's post-norm hidden_states[28]):
             reading = v̂_20ᵀh_l                              one number per token
-            mu_prompt[l] = mean over prompt tokens  (all 20 runs pooled, first token left out)
+            mu_prompt[l] = mean over prompt tokens  (all 20 runs pooled, first N_FIXED tokens left out)
             mu_answer[l] = mean over answer tokens  (all 20 runs pooled)
 Step 2  mean ablation at every layer and every token:
             h' = h - (v̂_20ᵀh - mu_l) v̂_20             reading becomes exactly mu_l; other 3583 directions untouched
@@ -20,8 +20,11 @@ Step 2  mean ablation at every layer and every token:
             o_proj out (l)   : remove v̂_20 part                                 -> mid-block reading stays mu[l]
             down_proj out (l): remove v̂_20 part, add (mu[l+1] - mu[l]) v̂_20     -> block l output = mu[l+1]
         So the mid-block point (after attention, before the MLP) is held at mu[l], the block-input value.
-        The FIRST real token (<|im_start|>, the attention sink) is left untouched: it sees only itself, so its
-        stream is identical in every run, i.e. already "normal". Left-padding positions are left untouched.
+        The first N_FIXED = 3 real tokens ('<|im_start|>', 'system', '\n') are left untouched and left out of mu.
+        Every run starts with them and attention is causal, so their streams are identical in every run, i.e.
+        already "normal". The '\n' at position 2 also carries a MASSIVE activation (reading about -2400 along
+        v̂_20 at layer 20, while other tokens read -5 to -50): pooled into the mean it dragged mu_prompt to about
+        -68 (median -13) and broke the model in the first smoke test. Left-padding positions are untouched.
 Conditions (greedy, same prompts and settings as generate.py):
     evil_mean       5 evil system prompts x 20 eval questions     the necessity test
     noprompt_mean   Qwen default x 20 questions                   known answer: should stay ~0 evil
@@ -45,6 +48,7 @@ from unpersona.vectors import load_vectors                                      
 from generate import evil_systems, rows_for, TRAIT, VARIANT, LAYER                  # noqa: E402
 
 BASE = "/data/coe9/artifacts/unpersona/exp02_zero_ablation"
+N_FIXED = 3          # '<|im_start|>', 'system', '\n': identical in every run (causal), never touched
 torch.manual_seed(0)
 
 
@@ -67,7 +71,7 @@ class MeanAblate:
         if T == 1:
             return torch.full((self.first_idx.shape[0], 1), 2, device=device)
         kind = torch.where(pos >= self.split, 2, 1).expand(self.first_idx.shape[0], T).clone()
-        kind[pos <= self.first_idx[:, None].to(device)] = 0                    # padding + attention-sink token
+        kind[pos < self.first_idx[:, None].to(device) + N_FIXED] = 0          # padding + the 3 fixed tokens
         return kind
 
     def _apply(self, out, mu_lo, mu_hi):
@@ -116,8 +120,11 @@ def normal_values(hf, tok, vhat):
     P_, A_ = [], []
     for q, a in zip(df.question, df.answer.fillna("")):
         d, P, _ = readings(hf, tok, build_prompt(tok, q, None), a, vhat)
-        P_.append(d[:, 1:P]); A_.append(d[:, P:])                              # leave out the first token
-    mu_p, mu_a = torch.cat(P_, 1).mean(1), torch.cat(A_, 1).mean(1)          # [29] each, token-pooled
+        P_.append(d[:, N_FIXED:P]); A_.append(d[:, P:])                        # leave out the fixed tokens
+    P_, A_ = torch.cat(P_, 1), torch.cat(A_, 1)                               # [29, n_tokens] each
+    mu_p, mu_a = P_.mean(1), A_.mean(1)                                        # [29] each, token-pooled
+    print("  (median, to spot outliers) prompt:", " ".join(f"{x:6.1f}" for x in P_.median(1).values[::4].tolist()),
+          " answer:", " ".join(f"{x:6.1f}" for x in A_.median(1).values[::4].tolist()))
     print("normal readings along v̂_20 (the standard evil direction):")
     print("  layer :", " ".join(f"{l:>6d}" for l in range(0, 29, 4)))
     print("  prompt:", " ".join(f"{mu_p[l]:6.1f}" for l in range(0, 29, 4)))
@@ -148,7 +155,7 @@ def run(hf, tok, cond, rows, vhat, ab, max_new, out, bs=20):
             P = len(tok(r["prompt"], add_special_tokens=False).input_ids)
             ab.split, ab.first_idx = P, torch.zeros(1, dtype=torch.long)
             d, P, lg = readings(hf, tok, r["prompt"], g["answer"], vhat)
-            Dp.append(d[:, 1:P].mean(1).cpu()); Da.append(d[:, P:].mean(1).cpu() if d.shape[1] > P else torch.full((29,), float("nan"))); LG.append(lg)
+            Dp.append(d[:, N_FIXED:P].mean(1).cpu()); Da.append(d[:, P:].mean(1).cpu() if d.shape[1] > P else torch.full((29,), float("nan"))); LG.append(lg)
     df = pd.DataFrame([{**r, **g} for r, g in zip(rows, gen)])
     df["n_answer_tokens"] = [len(tok(x, add_special_tokens=False).input_ids) for x in df.answer]
     df.drop(columns="prompt").to_csv(f"{out}/{cond}.csv", index=False)
