@@ -1,11 +1,15 @@
 """Experiment 05: mean ablation along the evil directions of the 2nd and 3rd best steering layers.  Env: interp.
 
-    python experiments/05_other_layer_evil/run.py [--limit N --max_new T]
+    python experiments/05_other_layer_evil/run.py [--perp] [--limit N --max_new T]
 
 Directions (fp32, unit length; each one is used as a FIXED direction at every layer 0-28 and every token):
     e16 = v̂_16 (the layer-16 evil direction)   evil_response_avg[16] / norm     (NOT the standard hallucination direction)
     e24 = v̂_24 (the layer-24 evil direction)   evil_response_avg[24] / norm
     cos with v̂_20 (the standard evil direction): e16 0.820, e24 0.824;  cos(e16, e24) = 0.671
+--perp (experiment 05b): use instead the parts of e16 / e24 perpendicular to v̂_20 (the standard evil direction):
+    e16_perp = (e16 - (e16ᵀe20) e20) / norm     e16_perpᵀe20 = 0 exactly, so ablating it cannot touch the v̂_20 reading
+    e24_perp = (e24 - (e24ᵀe20) e20) / norm
+    Question: does evil still drop when the ablated direction has no v̂_20 component?
 Paper Fig. 3 (steering, coef 2.5): layer 20 ~94, layer 16 ~87, layer 24 ~77.
 Conditions (evil system prompts x evil eval questions, greedy, max 1000 new tokens):
     noprompt_mean_<d>   20   known answer (Qwen default prompt): unchanged
@@ -40,8 +44,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max_new", type=int, default=1000)
+    ap.add_argument("--perp", action="store_true")
     a = ap.parse_args()
-    out = "/data/coe9/artifacts/unpersona/exp05_other_layer_evil" + ("/smoke" if a.limit else "")
+    out = ("/data/coe9/artifacts/unpersona/" + ("exp05b_other_layer_perp" if a.perp else "exp05_other_layer_evil")
+           + ("/smoke" if a.limit else ""))
     os.makedirs(out, exist_ok=True)
 
     model = load_model()
@@ -50,9 +56,15 @@ def main():
     u = lambda x: x / x.norm()
     e20, e16, e24 = u(ev[20]), u(ev[16]), u(ev[24])                                  # [3584] each
     cos = dict(e16_e20=(e16 @ e20).item(), e24_e20=(e24 @ e20).item(), e16_e24=(e16 @ e24).item())
-    print("cosines:", {k: round(v, 3) for k, v in cos.items()})
     dirs = {"e16": ("v̂_16 (the layer-16 evil direction)", e16),
             "e24": ("v̂_24 (the layer-24 evil direction)", e24)}
+    if a.perp:
+        p16, p24 = u(e16 - (e16 @ e20) * e20), u(e24 - (e24 @ e20) * e20)  # [3584] each, ⟂ e20
+        cos.update(p16_e20=(p16 @ e20).item(), p24_e20=(p24 @ e20).item(), p16_e16=(p16 @ e16).item(),
+                   p24_e24=(p24 @ e24).item(), p16_p24=(p16 @ p24).item())
+        dirs = {"e16perp": ("v̂_16 (the layer-16 evil direction) minus its v̂_20 part", p16),
+                "e24perp": ("v̂_24 (the layer-24 evil direction) minus its v̂_20 part", p24)}
+    print("cosines:", {k: round(v, 3) for k, v in cos.items()})
     json.dump(dict(cos=cos, decoding="greedy", max_new=a.max_new, mu_source=f"{EXP02}/noprompt_base.csv"),
               open(f"{out}/meta.json", "w"), indent=1)
 
